@@ -29,13 +29,13 @@ def findKeyPointsAndDescriptors(img, method='BRIEF'):
         # Initiate ORB detector
         orb = cv2.ORB_create()
 
-        # find the keypoints with ORB
+        # find the key points with ORB
         keypoints = orb.detect(img_gray, None)
 
         # compute the descriptors with ORB
         keypoints, descriptors = orb.compute(img_gray, keypoints)
 
-        # convert keypoints to numpy array
+        # convert key points to numpy array
         locs = np.array([keypoint.pt for keypoint in keypoints])
 
     return locs, descriptors
@@ -50,113 +50,108 @@ def matchDescriptors(desc_list, ratio=0.8):
     return matches
 
 
-def computeH(locs_list, matches):
-    H_list = []
-    for i in range(len(matches)):
-        locs1 = locs_list[i][matches[i][:, 0]]
-        locs2 = locs_list[i + 1][matches[i][:, 1]]
+def computeH(locs1, locs2, matches):
+    locs1 = locs1[matches[:, 0]]
+    locs2 = locs2[matches[:, 1]]
 
-        homography, _ = planarH.computeH_ransac(locs2, locs1)
-        # homography, _ = cv2.findHomography(locs1, locs2, cv2.RANSAC, 2.0)
+    homography, _ = planarH.computeH_ransac(locs2, locs1)
+    # homography, _ = cv2.findHomography(locs1, locs2, cv2.RANSAC, 2.0)
 
-        H_list.append(homography)
-
-    return H_list
+    return homography
 
 
-def stitch(img_list, H_list):
-    current_img = img_list[0]
-    current_translation = [0, 0]
-    for i in range(1, 2):
-        img1 = current_img
-        img2 = img_list[i]
-        H = H_list[i-1]
+def stitch_two_image(img1, img2, crop=False, method='ORB', ratio=0.8):
+    # Compute homography
+    locs1, desc1 = findKeyPointsAndDescriptors(img1, method=method)
+    locs2, desc2 = findKeyPointsAndDescriptors(img2, method=method)
 
-        H_translation0 = np.array([[1, 0, current_translation[0]], [0, 1, current_translation[1]], [0, 0, 1]])
+    matches = skimage.feature.match_descriptors(desc1, desc2, 'hamming', cross_check=True, max_ratio=ratio)
 
-        x1, y1 = img1.shape[:2]
-        x2, y2 = img2.shape[:2]
+    H = computeH(locs1, locs2, matches)
 
-        img1_corners = np.float32([[0, 0], [0, x1], [y1, x1], [y1, 0]]).reshape(-1, 1, 2)
-        img2_corners = np.float32([[0, 0], [0, x2], [y2, x2], [y2, 0]]).reshape(-1, 1, 2)
+    x1, y1 = img1.shape[:2]
+    x2, y2 = img2.shape[:2]
 
-        print()
-        print("img1_corners: ", img1_corners)
-        print("img2_corners: ", img2_corners)
+    print(x1, y1, x2, y2)
 
-        img1_corners_transformed = cv2.perspectiveTransform(img1_corners, H_translation0 @ H)
-        imgs_corners = np.concatenate((img1_corners_transformed, img2_corners), axis=0)
+    img1_corners = np.float32([[0, 0], [0, x1], [y1, x1], [y1, 0]]).reshape(-1, 1, 2)
+    img2_corners = np.float32([[0, 0], [0, x2], [y2, x2], [y2, 0]]).reshape(-1, 1, 2)
 
-        [x_min, y_min] = np.int32(imgs_corners.min(axis=0).ravel() - 0.5)
-        [x_max, y_max] = np.int32(imgs_corners.max(axis=0).ravel() + 0.5)
+    img1_corners_transformed = cv2.perspectiveTransform(img1_corners, H)
+    imgs_corners = np.concatenate((img1_corners_transformed, img2_corners), axis=0)
 
-        print('Translation distance: {}'.format([-x_min, -y_min]))
+    [x_min, y_min] = np.int32(imgs_corners.min(axis=0).ravel() - 0.5)
+    [x_max, y_max] = np.int32(imgs_corners.max(axis=0).ravel() + 0.5)
 
-        translation_dist = [-x_min + current_translation[0], -y_min + current_translation[1]]
+    translation_dist = [-x_min, -y_min]
 
-        print('Translation distance added: {}'.format(translation_dist))
+    print(translation_dist)
 
-        H_translation = np.array([[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]])
+    H_translation = np.array([[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]])
 
+    if not crop:
         img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (x_max - x_min, y_max - y_min))
-
-        print('img1_warped shape: {}'.format(img1_warped.shape))
-        print("translation_dist[0]: ", translation_dist[0])
-        print("translation_dist[1]: ", translation_dist[1])
-        print("x1 = {}, y1 = {}, x2 = {}, y2 = {}".format(x1, y1, x2, y2))
-
         output_img = np.zeros_like(img1_warped)
-
         output_img[translation_dist[1]:x2 + translation_dist[1], translation_dist[0]:y2 + translation_dist[0]] = img2
 
         # Overlay img1_warped on top of output_img
         mask = img1_warped > 0
         output_img[mask] = img1_warped[mask]
-        current_img = output_img
-        current_translation = translation_dist
+    else:
 
-        print('Stitching image {} and {}, output shape {}'.format(i, i + 1, output_img.shape))
+        img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (x1 + x2, y1 + y2))
 
 
-    return current_img
+        top_left = img1_corners_transformed[0][0]
+        top_right = img1_corners_transformed[1][0]
+        bottom_right = img1_corners_transformed[2][0]
+        bottom_left = img1_corners_transformed[3][0]
 
-# def stitch(img_list, H_list):
-#     output_imgs = []
-#     for i in range(len(H_list)):
-#         img1 = img_list[i]
-#         img2 = img_list[i + 1]
-#         H = H_list[i]
-#
-#         rows1, cols1 = img1.shape[:2]
-#         rows2, cols2 = img2.shape[:2]
-#
-#         list_of_points_1 = np.float32([[0, 0], [0, rows1], [cols1, rows1], [cols1, 0]]).reshape(-1, 1, 2)
-#         temp_points = np.float32([[0, 0], [0, rows2], [cols2, rows2], [cols2, 0]]).reshape(-1, 1, 2)
-#
-#         # When we have established a homography we need to warp perspective
-#         # Change field of view
-#         list_of_points_2 = cv2.perspectiveTransform(temp_points, H)
-#
-#         list_of_points = np.concatenate((list_of_points_1, list_of_points_2), axis=0)
-#
-#         [x_min, y_min] = np.int32(list_of_points.min(axis=0).ravel() - 0.5)
-#         [x_max, y_max] = np.int32(list_of_points.max(axis=0).ravel() + 0.5)
-#
-#         translation_dist = [-x_min, -y_min]
-#
-#         H_translation = np.array([[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]])
-#
-#         img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (x_max - x_min, y_max - y_min))
-#
-#         output_img = np.zeros_like(img1_warped)
-#
-#         output_img[translation_dist[1]:rows1 + translation_dist[1],
-#         translation_dist[0]:cols1 + translation_dist[0]] = img2
-#
-#         # Overlay img1_warped on top of output_img
-#         mask = img1_warped > 0
-#         output_img[mask] = img1_warped[mask]
-#
-#         output_imgs.append(output_img)
-#
-#     return output_imgs
+        x1_crop, y1_crop, x2_crop, y2_crop = None, None, None, None
+
+
+        if (top_left[0] > bottom_left[0]):
+
+
+        if (top_left[1] > 0) and (top_left[0] > top_right[0]):
+            y1_crop = top_left[1]
+        elif (top_right[1] > 0) and (top_right[0] > top_left[0]):
+            y1_crop = top_right[1]
+        else:
+            y1_crop = 0
+
+        if (bottom_left[1] < y2) and (bottom_left[0] < bottom_right[0]):
+            y2_crop = bottom_left[1]
+        elif (bottom_right[1] < y2) and (bottom_right[0] < bottom_left[0]):
+            y2_crop = bottom_right[1]
+        else:
+            y2_crop = y2
+
+
+
+
+    return output_img
+
+
+def stitch_all(img_list, method='ORB', ratio=0.8):
+    """
+    Order 0: Recursively stitch every two images from left to right"
+    Order 1: Recursively stitch every two images from right to left"
+
+    """
+
+    img_list_stitched = []
+
+    for i in range(len(img_list) - 1):
+        img_list_stitched.append(
+            stitch_two_image(img_list[i], img_list[i + 1], method=method, ratio=ratio))
+
+    while len(img_list_stitched) > 1:
+        img_list_stitched_new = []
+        for i in range(len(img_list_stitched) - 1):
+            img_list_stitched_new.append(
+                stitch_two_image(img_list_stitched[i], img_list_stitched[i + 1], method=method,
+                                 ratio=ratio))
+        img_list_stitched = img_list_stitched_new
+
+    return img_list_stitched[0]
