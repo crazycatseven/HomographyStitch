@@ -15,7 +15,9 @@ if __name__ == '__main__':
     # Show the images in the same figure
 
     plt.figure(figsize=(20, 10))
-    output = sticher.stitch_all(imgs)
+    output = sticher.stitch_all(imgs, crop=False)
+
+    # output = sticher.stitch_two_image(imgs[0], imgs[1])
     plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
 
     plt.show()
