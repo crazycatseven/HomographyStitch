@@ -48,6 +48,18 @@ def findKeyPointsAndDescriptors(img, method='ORB'):
         # convert key points to numpy array
         locs = np.array([keypoint.pt for keypoint in keypoints])
 
+    elif method == 'SIFT':
+        sift=cv2.SIFT_create()
+
+        # find the key points with SIFT
+        keypoints = sift.detect(img_gray, None)
+
+         # compute the descriptors with SIFT
+        keypoints, descriptors = sift.compute(img_gray, keypoints)
+
+        # convert key points to numpy array
+        locs = np.array([keypoint.pt for keypoint in keypoints])
+
     return locs, descriptors
 
 
@@ -102,7 +114,7 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
     locs1, desc1 = findKeyPointsAndDescriptors(img1, method=method)
     locs2, desc2 = findKeyPointsAndDescriptors(img2, method=method)
 
-    matches = skimage.feature.match_descriptors(desc1, desc2, 'hamming', max_ratio=ratio)
+    matches = skimage.feature.match_descriptors(desc1, desc2, max_ratio=ratio)
 
     H = computeH(locs1, locs2, matches)
 
@@ -170,21 +182,29 @@ def stitch_all(img_list, method='ORB', crop=False, ratio=0.8):
     Returns:
     - output_img: the stitched output image
     """
-    img_list_stitched = []
+    
+    n=int(len(img_list)/2+0.5)
+    left=img_list[:n]
+    right=img_list[n-1:]
+    right.reverse()
+    while len(left)>1:
+        dst_img=left.pop()
+        src_img=left.pop()
+        left_pano=stitch_two_image(src_img,dst_img, method=method, ratio=ratio, crop=crop)
+        # left_pano=left_pano.astype('uint8')
+        left.append(left_pano)
 
-    # Stitch adjacent pairs of images in the input list
-    for i in range(len(img_list) - 1):
-        img_list_stitched.append(
-            stitch_two_image(img_list[i], img_list[i + 1], method=method, ratio=ratio, crop=crop))
-
-    # Stitch together the results of previous stitching passes until only one image is left
-    while len(img_list_stitched) > 1:
-        img_list_stitched_new = []
-        for i in range(len(img_list_stitched) - 1):
-            # Stitch together adjacent pairs of images
-            img_list_stitched_new.append(
-                stitch_two_image(img_list_stitched[i], img_list_stitched[i + 1], method=method,
-                                 ratio=ratio, crop=crop))
-        img_list_stitched = img_list_stitched_new
-
-    return img_list_stitched[0]
+    while len(right)>1:
+        dst_img=right.pop()
+        src_img=right.pop()
+        right_pano=stitch_two_image(src_img,dst_img, method=method, ratio=ratio, crop=crop)
+        # right_pano=right_pano.astype('uint8')
+        right.append(right_pano)
+    
+    #if width_right_pano > width_left_pano, Select right_pano as destination. Otherwise is left_pano
+    if(right_pano.shape[1]>=left_pano.shape[1]):
+        fullpano=stitch_two_image(left_pano,right_pano,method=method, ratio=ratio, crop=crop)
+    else:
+        fullpano=stitch_two_image(right_pano,left_pano,method=method, ratio=ratio, crop=crop)
+    
+    return fullpano
