@@ -9,7 +9,7 @@ import planarH
 PATCHWIDTH = 9
 
 
-def findKeyPointsAndDescriptors(img, method='BRIEF'):
+def findKeyPointsAndDescriptors(img, method='ORB'):
     img = img.astype(np.uint8)
 
     # Convert image to grayscale
@@ -44,8 +44,7 @@ def findKeyPointsAndDescriptors(img, method='BRIEF'):
 def matchDescriptors(desc_list, ratio=0.8):
     matches = []
     for i in range(len(desc_list) - 1):
-        matches.append(skimage.feature.match_descriptors(desc_list[i], desc_list[i + 1], 'hamming', cross_check=True,
-                                                         max_ratio=ratio))
+        matches.append(skimage.feature.match_descriptors(desc_list[i], desc_list[i + 1], 'hamming', max_ratio=ratio))
 
     return matches
 
@@ -55,7 +54,6 @@ def computeH(locs1, locs2, matches):
     locs2 = locs2[matches[:, 1]]
 
     homography, _ = planarH.computeH_ransac(locs2, locs1)
-    # homography, _ = cv2.findHomography(locs1, locs2, cv2.RANSAC, 2.0)
 
     return homography
 
@@ -99,8 +97,6 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
         bottom_right = np.abs(img1_corners_transformed[2][0] + translation_dist).astype(np.int32)
         top_right = np.abs(img1_corners_transformed[3][0] + translation_dist).astype(np.int32)
 
-        print(top_left, bottom_left, bottom_right, top_right)
-
         x1_crop = np.max([top_left[0], bottom_left[0]])
         x2_crop = x1_crop + translation_dist[0] + y2
 
@@ -108,13 +104,6 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
         y1_crop = np.max([y1_crop, translation_dist[1]])
 
         y2_crop = min([bottom_left[1], bottom_right[1], translation_dist[1] + x2])
-
-        print(x1_crop, x2_crop, y1_crop)
-
-        # y1_crop = np.max(np.max([top_left[1], top_right[1]]), translation_dist[1])
-        # y2_crop = min(np.min([bottom_left[1], bottom_right[1]]), translation_dist[1] + x2)
-
-        # y1_crop
 
         output_img = output_img[y1_crop:y2_crop, x1_crop:x2_crop, :]
 
@@ -127,9 +116,6 @@ def stitch_all(img_list, method='ORB', crop=False, ratio=0.8):
     Order 1: Recursively stitch every two images from right to left"
 
     """
-
-    print(len(img_list))
-
     img_list_stitched = []
 
     for i in range(len(img_list) - 1):
