@@ -3,13 +3,23 @@ import numpy as np
 import skimage.color
 import skimage.feature
 import helper
-from functools import reduce
 import planarH
 
 PATCHWIDTH = 9
 
 
 def findKeyPointsAndDescriptors(img, method='ORB'):
+    """
+     Finds keypoints and descriptors in the input image using the specified feature detection and description method.
+
+     Args:
+     - img: the input image
+     - method: the feature detection and description method to use (default is 'ORB')
+
+     Returns:
+     - locs: the locations of the detected keypoints
+     - descriptors: the descriptors computed for the detected keypoints
+     """
     img = img.astype(np.uint8)
 
     # Convert image to grayscale
@@ -50,15 +60,44 @@ def matchDescriptors(desc_list, ratio=0.8):
 
 
 def computeH(locs1, locs2, matches):
+    """
+    Computes the homography matrix between two sets of matched points.
+
+    Args:
+    - locs1: the keypoints in the first image
+    - locs2: the keypoints in the second image
+    - matches: the matched keypoints between the two images
+
+    Returns:
+    - homography: the computed homography matrix
+    """
+
+    # Select the matched keypoints from the input lists
     locs1 = locs1[matches[:, 0]]
     locs2 = locs2[matches[:, 1]]
 
+    # Compute the homography matrix using RANSAC
     homography, _ = planarH.computeH_ransac(locs2, locs1)
 
     return homography
 
 
 def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
+    """
+    Stitches two input images together.
+    Note: It will warp img1 to img2's coordinate space.
+
+    Args:
+    - img1: the first input image
+    - img2: the second input image
+    - crop: whether crop the output image to remove black borders (boolean)
+    - method: the feature detection and description method to use (default is 'ORB')
+    - ratio: the maximum ratio of second-best matches to best matches to consider (default is 0.8)
+
+    Returns:
+    - output_img: the stitched output image
+    """
+
     # Compute homography
     locs1, desc1 = findKeyPointsAndDescriptors(img1, method=method)
     locs2, desc2 = findKeyPointsAndDescriptors(img2, method=method)
@@ -67,6 +106,7 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
 
     H = computeH(locs1, locs2, matches)
 
+    # Calculate output image size and translation distance
     x1, y1 = img1.shape[:2]
     x2, y2 = img2.shape[:2]
 
@@ -84,6 +124,8 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
     H_translation = np.array([[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]])
 
     img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (x_max - x_min, y_max - y_min))
+
+    # Create output image and first place img2 in it
     output_img = np.zeros_like(img1_warped)
     output_img[translation_dist[1]:x2 + translation_dist[1], translation_dist[0]:y2 + translation_dist[0]] = img2
 
@@ -92,11 +134,13 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
     output_img[mask] = img1_warped[mask]
 
     if crop:
+        # Calculate the corners of the transformed image
         top_left = np.abs(img1_corners_transformed[0][0] + translation_dist).astype(np.int32)
         bottom_left = np.abs(img1_corners_transformed[1][0] + translation_dist).astype(np.int32)
         bottom_right = np.abs(img1_corners_transformed[2][0] + translation_dist).astype(np.int32)
         top_right = np.abs(img1_corners_transformed[3][0] + translation_dist).astype(np.int32)
 
+        # Calculate the bounding box of the output image
         x1_crop = np.max([top_left[0], bottom_left[0]])
         x2_crop = x1_crop + translation_dist[0] + y2
 
@@ -105,6 +149,7 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
 
         y2_crop = min([bottom_left[1], bottom_right[1], translation_dist[1] + x2])
 
+        # Crop the output image to the calculated bounding box
         output_img = output_img[y1_crop:y2_crop, x1_crop:x2_crop, :]
 
     return output_img
@@ -112,19 +157,31 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
 
 def stitch_all(img_list, method='ORB', crop=False, ratio=0.8):
     """
-    Order 0: Recursively stitch every two images from left to right"
-    Order 1: Recursively stitch every two images from right to left"
+    Stitches together all input images in the given list.
+    Note: It will warp the first image to the second image's coordinate space,
+    then the second image to the third image's coordinate space, etc.
 
+    Args:
+    - img_list: a list of input images to stitch together
+    - method: the feature detection and description method to use (default is 'ORB')
+    - crop: whether crop the output image to remove black borders
+    - ratio: the maximum ratio of second-best matches to best matches to consider (default is 0.8)
+
+    Returns:
+    - output_img: the stitched output image
     """
     img_list_stitched = []
 
+    # Stitch adjacent pairs of images in the input list
     for i in range(len(img_list) - 1):
         img_list_stitched.append(
             stitch_two_image(img_list[i], img_list[i + 1], method=method, ratio=ratio, crop=crop))
 
+    # Stitch together the results of previous stitching passes until only one image is left
     while len(img_list_stitched) > 1:
         img_list_stitched_new = []
         for i in range(len(img_list_stitched) - 1):
+            # Stitch together adjacent pairs of images
             img_list_stitched_new.append(
                 stitch_two_image(img_list_stitched[i], img_list_stitched[i + 1], method=method,
                                  ratio=ratio, crop=crop))
