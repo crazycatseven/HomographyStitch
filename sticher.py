@@ -94,6 +94,61 @@ def computeH(locs1, locs2, matches):
     return homography
 
 
+def blendingMask(height, width, barrier, smoothing_window, left_biased=True):
+    assert barrier < width
+    mask = np.zeros((height, width),dtype="uint8")
+
+    offset = int(smoothing_window/2)
+    try:
+        if left_biased:
+                mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(1,0,2*offset+1).T, (height, 1))
+                mask[:,:barrier-offset] = 1
+        else:
+                mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(0,1,2*offset+1).T, (height, 1))
+                mask[:,barrier+offset:] = 1
+    except:
+        if left_biased:
+                mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(1,0,2*offset).T, (height, 1))
+                mask[:,:barrier-offset] = 1
+        else:
+            mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(0,1,2*offset).T, (height, 1))
+            mask[:,barrier+offset:] = 1
+
+    return cv2.merge([mask, mask, mask])
+
+def blending(img1,img2,img2_width,side):
+    """
+    Blending two input images together.
+
+    Args:
+    - img1: the first input image (Src)
+    - img2: the second input image (Dst)
+    - img2_width: the width of img2
+    - side: which side is img1 on
+
+
+    Returns:
+    - output_img: the stitched output image
+    """   
+    h,w,_=img2.shape
+    smoothing_window=int(img2_width/8)
+    border = img2_width-int(smoothing_window/2)
+    mask1 = blendingMask(h, w, border, smoothing_window = smoothing_window, left_biased = True)
+    mask2 = blendingMask(h, w, border, smoothing_window = smoothing_window, left_biased = False)
+
+    if side=='left':
+        img2=cv2.flip(img2,1)
+        img1=cv2.flip(img1,1)
+        img2=(img2*mask1)
+        img1=(img1*mask2)
+        output=img1+img2
+        output=cv2.flip(output,1)
+    else:
+        img2=(img2*mask1)
+        img1=(img1*mask2)
+        output=img1+img2
+    return output
+
 def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
     """
     Stitches two input images together.
@@ -119,31 +174,49 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
     H = computeH(locs1, locs2, matches)
 
     # Calculate output image size and translation distance
-    x1, y1 = img1.shape[:2]
-    x2, y2 = img2.shape[:2]
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
 
-    img1_corners = np.float32([[0, 0], [0, x1], [y1, x1], [y1, 0]]).reshape(-1, 1, 2)
-    img2_corners = np.float32([[0, 0], [0, x2], [y2, x2], [y2, 0]]).reshape(-1, 1, 2)
+    img1_corners = np.float32([[0, 0], [0, h1], [w1, h1], [w1, 0]]).reshape(-1, 1, 2)
+    img2_corners = np.float32([[0, 0], [0, h2], [w2, h2], [w2, 0]]).reshape(-1, 1, 2)
+    try:
+        img1_corners_transformed = cv2.perspectiveTransform(img1_corners, H)
+        imgs_corners = np.concatenate((img1_corners_transformed, img2_corners), axis=0)
 
-    img1_corners_transformed = cv2.perspectiveTransform(img1_corners, H)
-    imgs_corners = np.concatenate((img1_corners_transformed, img2_corners), axis=0)
+        [x_min, y_min] = np.int32(imgs_corners.min(axis=0).ravel() - 0.5)
+        [x_max, y_max] = np.int32(imgs_corners.max(axis=0).ravel() + 0.5)
 
-    [x_min, y_min] = np.int32(imgs_corners.min(axis=0).ravel() - 0.5)
-    [x_max, y_max] = np.int32(imgs_corners.max(axis=0).ravel() + 0.5)
+        translation_dist = [-x_min, -y_min]
+        
+        # Determine whether img1 is on the left side or right side of the output image
+        # if the top left corner (Transformed) have x < 0, then it should be on the left side
+        if(imgs_corners[0][0][0]<0):
+            side='left'
+            width_output=w2+translation_dist[0]
+        else:
+            width_output = int(img1_corners_transformed[3][0][0])
+            side='right'
+        width_output=x_max-x_min
+        height_output=y_max-y_min
 
-    translation_dist = [-x_min, -y_min]
+        H_translation = np.array([[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]])
+        img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (width_output,height_output))
 
-    H_translation = np.array([[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]])
+        # # Create output image
+        output_img = np.zeros_like(img1_warped)
+        
+        # Generating size of img2_resized which has the same size as img1_warped
+        img2_resized=np.zeros((height_output,width_output,3),dtype="uint8")
+        if side=='left':
+            img2_resized[translation_dist[1]:h2+translation_dist[1],translation_dist[0]:w2+translation_dist[0]] = img2
+        else:
+            img2_resized[translation_dist[1]:h2+translation_dist[1],:w2] = img2
 
-    img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (x_max - x_min, y_max - y_min))
-
-    # Create output image and first place img2 in it
-    output_img = np.zeros_like(img1_warped)
-    output_img[translation_dist[1]:x2 + translation_dist[1], translation_dist[0]:y2 + translation_dist[0]] = img2
-
-    # Overlay img1_warped on top of output_img
-    mask = img1_warped > 0
-    output_img[mask] = img1_warped[mask]
+        # Blending
+        output_img=blending(img1_warped,img2_resized,w2,side)
+    
+    except:
+        raise Exception("The image set doesn't meet the requirement.")
 
     if crop:
         # Calculate the corners of the transformed image
@@ -153,16 +226,16 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
         top_right = np.abs(img1_corners_transformed[3][0] + translation_dist).astype(np.int32)
 
         # Calculate the bounding box of the output image
-        x1_crop = np.max([top_left[0], bottom_left[0]])
-        x2_crop = x1_crop + translation_dist[0] + y2
+        h1_crop = np.max([top_left[0], bottom_left[0]])
+        h2_crop = h1_crop + translation_dist[0] + w2
 
-        y1_crop = np.max([top_left[1], top_right[1]])
-        y1_crop = np.max([y1_crop, translation_dist[1]])
+        w1_crop = np.max([top_left[1], top_right[1]])
+        w1_crop = np.max([w1_crop, translation_dist[1]])
 
-        y2_crop = min([bottom_left[1], bottom_right[1], translation_dist[1] + x2])
+        w2_crop = min([bottom_left[1], bottom_right[1], translation_dist[1] + h2])
 
         # Crop the output image to the calculated bounding box
-        output_img = output_img[y1_crop:y2_crop, x1_crop:x2_crop, :]
+        output_img = output_img[w1_crop:w2_crop, h1_crop:h2_crop, :]
 
     return output_img
 
@@ -182,7 +255,7 @@ def stitch_all(img_list, method='ORB', crop=False, ratio=0.8):
     Returns:
     - output_img: the stitched output image
     """
-    
+
     n=int(len(img_list)/2+0.5)
     left=img_list[:n]
     right=img_list[n-1:]
@@ -191,14 +264,12 @@ def stitch_all(img_list, method='ORB', crop=False, ratio=0.8):
         dst_img=left.pop()
         src_img=left.pop()
         left_pano=stitch_two_image(src_img,dst_img, method=method, ratio=ratio, crop=crop)
-        # left_pano=left_pano.astype('uint8')
         left.append(left_pano)
 
     while len(right)>1:
         dst_img=right.pop()
         src_img=right.pop()
         right_pano=stitch_two_image(src_img,dst_img, method=method, ratio=ratio, crop=crop)
-        # right_pano=right_pano.astype('uint8')
         right.append(right_pano)
     
     #if width_right_pano > width_left_pano, Select right_pano as destination. Otherwise is left_pano
