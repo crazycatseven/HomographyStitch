@@ -4,6 +4,7 @@ import skimage.color
 import skimage.feature
 import helper
 import planarH
+# import matplotlib.pyplot as plt
 
 PATCHWIDTH = 9
 
@@ -52,10 +53,7 @@ def findKeyPointsAndDescriptors(img, method='ORB'):
         sift=cv2.SIFT_create()
 
         # find the key points with SIFT
-        keypoints = sift.detect(img_gray, None)
-
-         # compute the descriptors with SIFT
-        keypoints, descriptors = sift.compute(img_gray, keypoints)
+        keypoints, descriptors = sift.detectAndCompute(img_gray, None)
 
         # convert key points to numpy array
         locs = np.array([keypoint.pt for keypoint in keypoints])
@@ -96,13 +94,13 @@ def computeH(locs1, locs2, matches):
 
 def blendingMask(height, width, barrier, smoothing_window, left_biased=True):
     assert barrier < width
-    mask = np.zeros((height, width),dtype="uint8")
+    mask = np.zeros((height, width))
 
     offset = int(smoothing_window/2)
     try:
         if left_biased:
-                mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(1,0,2*offset+1).T, (height, 1))
-                mask[:,:barrier-offset] = 1
+            mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(1,0,2*offset+1).T, (height, 1))
+            mask[:,:barrier-offset] = 1
         else:
                 mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(0,1,2*offset+1).T, (height, 1))
                 mask[:,barrier+offset:] = 1
@@ -192,9 +190,9 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
         # if the top left corner (Transformed) have x < 0, then it should be on the left side
         if(imgs_corners[0][0][0]<0):
             side='left'
-            width_output=w2+translation_dist[0]
+            # width_output=w2+translation_dist[0]
         else:
-            width_output = int(img1_corners_transformed[3][0][0])
+            # width_output = int(img1_corners_transformed[3][0][0])
             side='right'
         width_output=x_max-x_min
         height_output=y_max-y_min
@@ -213,29 +211,31 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
             img2_resized[translation_dist[1]:h2+translation_dist[1],:w2] = img2
 
         # Blending
-        output_img=blending(img1_warped,img2_resized,w2,side)
+        output_img=np.asarray(blending(img1_warped,img2_resized,w2,side),dtype="uint8")
     
     except:
         raise Exception("The image set doesn't meet the requirement.")
 
     if crop:
-        # Calculate the corners of the transformed image
-        top_left = np.abs(img1_corners_transformed[0][0] + translation_dist).astype(np.int32)
-        bottom_left = np.abs(img1_corners_transformed[1][0] + translation_dist).astype(np.int32)
-        bottom_right = np.abs(img1_corners_transformed[2][0] + translation_dist).astype(np.int32)
-        top_right = np.abs(img1_corners_transformed[3][0] + translation_dist).astype(np.int32)
-
-        # Calculate the bounding box of the output image
-        h1_crop = np.max([top_left[0], bottom_left[0]])
-        h2_crop = h1_crop + translation_dist[0] + w2
-
-        w1_crop = np.max([top_left[1], top_right[1]])
-        w1_crop = np.max([w1_crop, translation_dist[1]])
-
-        w2_crop = min([bottom_left[1], bottom_right[1], translation_dist[1] + h2])
-
-        # Crop the output image to the calculated bounding box
-        output_img = output_img[w1_crop:w2_crop, h1_crop:h2_crop, :]
+        left_border=0
+        right_border=width_output
+        if side=="left":
+            left_border=int(np.max([img1_corners_transformed[0][0][0],img1_corners_transformed[1][0][0]])+translation_dist[0])
+        
+        else:
+            right_border=int(np.min([img1_corners_transformed[2][0][0],img1_corners_transformed[3][0][0]])+translation_dist[0])
+        
+        top_border=int(np.max([img1_corners_transformed[0][0][1],
+                               img1_corners_transformed[3][0][1],
+                               img2_corners[0][0][0]])+translation_dist[1])
+        bottom_border=int(np.min([img1_corners_transformed[1][0][1]+translation_dist[1],
+                                  img1_corners_transformed[2][0][1]+translation_dist[1],
+                                  img2_corners[1][0][1]])+translation_dist[1])
+        output_img=output_img[top_border:bottom_border,left_border:right_border,:]
+    
+    # Only For Test
+    # plt.imshow(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB))
+    # plt.show()
 
     return output_img
 
