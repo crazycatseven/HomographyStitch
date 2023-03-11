@@ -1,9 +1,14 @@
+import time
+
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import skimage.color
 import skimage.feature
 import helper
 import planarH
+import tqdm
+
 # import matplotlib.pyplot as plt
 
 PATCHWIDTH = 9
@@ -24,7 +29,8 @@ def findKeyPointsAndDescriptors(img, method='ORB'):
     img = img.astype(np.uint8)
 
     # Convert image to grayscale
-    img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # img_gray = skimage.color.rgb2gray(img)
 
     locs = None
     descriptors = None
@@ -50,7 +56,8 @@ def findKeyPointsAndDescriptors(img, method='ORB'):
         locs = np.array([keypoint.pt for keypoint in keypoints])
 
     elif method == 'SIFT':
-        sift=cv2.SIFT_create()
+        sift = cv2.SIFT_create()
+        # sift = cv2.xfeatures2d.SIFT_create()
 
         # find the key points with SIFT
         keypoints, descriptors = sift.detectAndCompute(img_gray, None)
@@ -96,25 +103,26 @@ def blendingMask(height, width, barrier, smoothing_window, left_biased=True):
     assert barrier < width
     mask = np.zeros((height, width))
 
-    offset = int(smoothing_window/2)
+    offset = int(smoothing_window / 2)
     try:
         if left_biased:
-            mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(1,0,2*offset+1).T, (height, 1))
-            mask[:,:barrier-offset] = 1
+            mask[:, barrier - offset:barrier + offset + 1] = np.tile(np.linspace(1, 0, 2 * offset + 1).T, (height, 1))
+            mask[:, :barrier - offset] = 1
         else:
-                mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(0,1,2*offset+1).T, (height, 1))
-                mask[:,barrier+offset:] = 1
+            mask[:, barrier - offset:barrier + offset + 1] = np.tile(np.linspace(0, 1, 2 * offset + 1).T, (height, 1))
+            mask[:, barrier + offset:] = 1
     except:
         if left_biased:
-                mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(1,0,2*offset).T, (height, 1))
-                mask[:,:barrier-offset] = 1
+            mask[:, barrier - offset:barrier + offset + 1] = np.tile(np.linspace(1, 0, 2 * offset).T, (height, 1))
+            mask[:, :barrier - offset] = 1
         else:
-            mask[:,barrier-offset:barrier+offset+1]=np.tile(np.linspace(0,1,2*offset).T, (height, 1))
-            mask[:,barrier+offset:] = 1
+            mask[:, barrier - offset:barrier + offset + 1] = np.tile(np.linspace(0, 1, 2 * offset).T, (height, 1))
+            mask[:, barrier + offset:] = 1
 
     return cv2.merge([mask, mask, mask])
 
-def blending(img1,img2,img2_width,side):
+
+def blending(img1, img2, img2_width, side):
     """
     Blending two input images together.
 
@@ -127,25 +135,26 @@ def blending(img1,img2,img2_width,side):
 
     Returns:
     - output_img: the stitched output image
-    """   
-    h,w,_=img2.shape
-    smoothing_window=int(img2_width/8)
-    border = img2_width-int(smoothing_window/2)
-    mask1 = blendingMask(h, w, border, smoothing_window = smoothing_window, left_biased = True)
-    mask2 = blendingMask(h, w, border, smoothing_window = smoothing_window, left_biased = False)
+    """
+    h, w, _ = img2.shape
+    smoothing_window = int(img2_width / 8)
+    border = img2_width - int(smoothing_window / 2)
+    mask1 = blendingMask(h, w, border, smoothing_window=smoothing_window, left_biased=True)
+    mask2 = blendingMask(h, w, border, smoothing_window=smoothing_window, left_biased=False)
 
-    if side=='left':
-        img2=cv2.flip(img2,1)
-        img1=cv2.flip(img1,1)
-        img2=(img2*mask1)
-        img1=(img1*mask2)
-        output=img1+img2
-        output=cv2.flip(output,1)
+    if side == 'left':
+        img2 = cv2.flip(img2, 1)
+        img1 = cv2.flip(img1, 1)
+        img2 = (img2 * mask1)
+        img1 = (img1 * mask2)
+        output = img1 + img2
+        output = cv2.flip(output, 1)
     else:
-        img2=(img2*mask1)
-        img1=(img1*mask2)
-        output=img1+img2
+        img2 = (img2 * mask1)
+        img1 = (img1 * mask2)
+        output = img1 + img2
     return output
+
 
 def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
     """
@@ -185,54 +194,57 @@ def stitch_two_image(img1, img2, crop, method='ORB', ratio=0.8):
         [x_max, y_max] = np.int32(imgs_corners.max(axis=0).ravel() + 0.5)
 
         translation_dist = [-x_min, -y_min]
-        
+
         # Determine whether img1 is on the left side or right side of the output image
         # if the top left corner (Transformed) have x < 0, then it should be on the left side
-        if(imgs_corners[0][0][0]<0):
-            side='left'
+        if imgs_corners[0][0][0] < 0:
+            side = 'left'
             # width_output=w2+translation_dist[0]
         else:
             # width_output = int(img1_corners_transformed[3][0][0])
-            side='right'
-        width_output=x_max-x_min
-        height_output=y_max-y_min
+            side = 'right'
+        width_output = x_max - x_min
+        height_output = y_max - y_min
 
         H_translation = np.array([[1, 0, translation_dist[0]], [0, 1, translation_dist[1]], [0, 0, 1]])
-        img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (width_output,height_output))
+        img1_warped = cv2.warpPerspective(img1, H_translation.dot(H), (width_output, height_output))
 
         # # Create output image
         output_img = np.zeros_like(img1_warped)
-        
+
         # Generating size of img2_resized which has the same size as img1_warped
-        img2_resized=np.zeros((height_output,width_output,3),dtype="uint8")
-        if side=='left':
-            img2_resized[translation_dist[1]:h2+translation_dist[1],translation_dist[0]:w2+translation_dist[0]] = img2
+        img2_resized = np.zeros((height_output, width_output, 3), dtype="uint8")
+        if side == 'left':
+            img2_resized[translation_dist[1]:h2 + translation_dist[1],
+            translation_dist[0]:w2 + translation_dist[0]] = img2
         else:
-            img2_resized[translation_dist[1]:h2+translation_dist[1],:w2] = img2
+            img2_resized[translation_dist[1]:h2 + translation_dist[1], :w2] = img2
 
         # Blending
-        output_img=np.asarray(blending(img1_warped,img2_resized,w2,side),dtype="uint8")
-    
+        output_img = np.asarray(blending(img1_warped, img2_resized, w2, side), dtype="uint8")
+
     except:
         raise Exception("The image set doesn't meet the requirement.")
 
     if crop:
-        left_border=0
-        right_border=width_output
-        if side=="left":
-            left_border=int(np.max([img1_corners_transformed[0][0][0],img1_corners_transformed[1][0][0]])+translation_dist[0])
-        
+        left_border = 0
+        right_border = width_output
+        if side == "left":
+            left_border = int(
+                np.max([img1_corners_transformed[0][0][0], img1_corners_transformed[1][0][0]]) + translation_dist[0])
+
         else:
-            right_border=int(np.min([img1_corners_transformed[2][0][0],img1_corners_transformed[3][0][0]])+translation_dist[0])
-        
-        top_border=int(np.max([img1_corners_transformed[0][0][1],
-                               img1_corners_transformed[3][0][1],
-                               img2_corners[0][0][0]])+translation_dist[1])
-        bottom_border=int(np.min([img1_corners_transformed[1][0][1]+translation_dist[1],
-                                  img1_corners_transformed[2][0][1]+translation_dist[1],
-                                  img2_corners[1][0][1]])+translation_dist[1])
-        output_img=output_img[top_border:bottom_border,left_border:right_border,:]
-    
+            right_border = int(
+                np.min([img1_corners_transformed[2][0][0], img1_corners_transformed[3][0][0]]) + translation_dist[0])
+
+        top_border = int(np.max([img1_corners_transformed[0][0][1],
+                                 img1_corners_transformed[3][0][1],
+                                 img2_corners[0][0][0]]) + translation_dist[1])
+        bottom_border = int(np.min([img1_corners_transformed[1][0][1] + translation_dist[1],
+                                    img1_corners_transformed[2][0][1] + translation_dist[1],
+                                    img2_corners[1][0][1]]) + translation_dist[1])
+        output_img = output_img[top_border:bottom_border, left_border:right_border, :]
+
     # Only For Test
     # plt.imshow(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB))
     # plt.show()
@@ -256,26 +268,65 @@ def stitch_all(img_list, method='ORB', crop=False, ratio=0.8):
     - output_img: the stitched output image
     """
 
-    n=int(len(img_list)/2+0.5)
-    left=img_list[:n]
-    right=img_list[n-1:]
+    # Print progress
+    total_time_start = time.time()
+    print('-' * 80)
+    print('Stitching image pairs, {} stitch(es) to go...'.format(len(img_list) - 1))
+    current_progress = 1
+
+    right_pano = None
+    left_pano = None
+
+    n = int(len(img_list) / 2 + 0.5)
+    left = img_list[:n]
+    right = img_list[n - 1:]
     right.reverse()
-    while len(left)>1:
-        dst_img=left.pop()
-        src_img=left.pop()
-        left_pano=stitch_two_image(src_img,dst_img, method=method, ratio=ratio, crop=crop)
+    while len(left) > 1:
+        # Print progress
+        print('Progress: {}/{}...'.format(current_progress, len(img_list) - 1), end='')
+        start_time = time.time()
+
+        dst_img = left.pop()
+        src_img = left.pop()
+        left_pano = stitch_two_image(src_img, dst_img, method=method, ratio=ratio, crop=crop)
         left.append(left_pano)
 
-    while len(right)>1:
-        dst_img=right.pop()
-        src_img=right.pop()
-        right_pano=stitch_two_image(src_img,dst_img, method=method, ratio=ratio, crop=crop)
+        current_progress += 1
+        print('Time elapsed: {:.2f} seconds'.format(time.time() - start_time))
+
+    while len(right) > 1:
+        # Print progress
+        print('Progress: {}/{}...'.format(current_progress, len(img_list) - 1), end='')
+        start_time = time.time()
+
+        dst_img = right.pop()
+        src_img = right.pop()
+        right_pano = stitch_two_image(src_img, dst_img, method=method, ratio=ratio, crop=crop)
         right.append(right_pano)
-    
-    #if width_right_pano > width_left_pano, Select right_pano as destination. Otherwise is left_pano
-    if(right_pano.shape[1]>=left_pano.shape[1]):
-        fullpano=stitch_two_image(left_pano,right_pano,method=method, ratio=ratio, crop=crop)
+
+        current_progress += 1
+        print('Done! Time elapsed: {:.2f} seconds'.format(time.time() - start_time))
+
+    # Sleep if it throws an error that says (-215:Assertion failed) !_src.empty() in function 'cvtColor'"
+    # I think it's because the program is too fast and the image hasn't been fully loaded yet
+
+
+    # Print progress
+    print('Stitching the final left and right panorama together...', end='')
+    start_time = time.time()
+
+    # if width_right_pano > width_left_pano, Select right_pano as destination. Otherwise, is left_pano
+    if right_pano.shape[1] >= left_pano.shape[1]:
+        fullpano = stitch_two_image(left[-1], right[-1], method=method, ratio=ratio, crop=crop)
     else:
-        fullpano=stitch_two_image(right_pano,left_pano,method=method, ratio=ratio, crop=crop)
-    
+        fullpano = stitch_two_image(right[-1], left[-1], method=method, ratio=ratio, crop=crop)
+
+    current_progress += 1
+    print('Time elapsed: {:.2f} seconds'.format(time.time() - start_time))
+
+    total_time_end = time.time()
+    print('Done! Total time elapsed: {:.2f} seconds'.format(total_time_end - total_time_start))
+    print('-' * 80)
+    print('')
+
     return fullpano
